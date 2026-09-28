@@ -1,60 +1,905 @@
-import { xorEncrypt, hashFingerprint } from './lib/crypto.js';
-import { redis } from './lib/redis.js';
-import { addLog } from './lib/logs.js';
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Key Manager</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
 
-function clientIp(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  if (fwd) return String(fwd).split(',')[0].trim();
-  return req.socket?.remoteAddress || 'unknown';
-}
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
-export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).send('Method not allowed');
-  }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0d0d0f;
+            color: #e0e0e0;
+            overflow: hidden;
+            height: 100vh;
+        }
 
-  const token = req.headers['x-session-token'];
-  const fingerprint = req.headers['fingerprint'];
-  const ip = clientIp(req);
+        .app {
+            display: flex;
+            height: 100vh;
+        }
 
-  if (!token) return res.status(400).send('Session token required');
-  if (!fingerprint) return res.status(400).send('Fingerprint required');
+        .sidebar {
+            width: 60px;
+            background: #111114;
+            border-right: 1px solid #1e1e24;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 10px;
+            gap: 5px;
+        }
 
-  try {
-    const tokenData = await redis.get(`token:${token}`);
-    if (!tokenData) {
-      await addLog('script', { level: 'error', event: 'pull_token_expired', ip });
-      return res.status(403).send('Invalid or expired session');
-    }
+        .sidebar-icon {
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.15s;
+            color: #555;
+        }
 
-    const fpHash = hashFingerprint(tokenData.hwid, fingerprint);
-    if (tokenData.fingerprint !== fpHash) {
-      await addLog('script', { level: 'error', event: 'pull_fingerprint_mismatch', key: tokenData.key, ip });
-      return res.status(403).send('Fingerprint mismatch');
-    }
+        .sidebar-icon:hover { background: #1a1a20; color: #aaa; }
+        .sidebar-icon.active { background: #1a1a20; color: #4ade80; }
+        .sidebar-icon svg { width: 22px; height: 22px; }
 
-    const scriptCode = await redis.get('script:code');
-    if (!scriptCode) {
-      await addLog('script', { level: 'error', event: 'script_missing', key: tokenData.key, ip });
-      return res.status(404).send('Script not found');
-    }
+        .main {
+            flex: 1;
+            display: flex;
+            gap: 0;
+            padding: 20px;
+            overflow: hidden;
+        }
 
-    const encrypted = xorEncrypt(scriptCode, token);
+        .panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #111114;
+            border: 1px solid #1e1e24;
+            border-radius: 4px;
+            padding: 20px;
+            margin-right: 20px;
+            overflow: hidden;
+        }
 
-    await addLog('script', {
-      level: 'success',
-      event: 'script_pulled',
-      key: tokenData.key,
-      hwid: tokenData.hwid,
-      size: scriptCode.length,
-      ip,
-    });
+        .panel:last-child { margin-right: 0; }
 
-    res.setHeader('Content-Type', 'text/plain');
-    return res.send(encrypted);
-  } catch (error) {
-    console.error('Pull error:', error);
-    await addLog('script', { level: 'error', event: 'pull_error', reason: String(error.message || error), ip });
-    return res.status(500).send('Internal server error');
-  }
-}
+        .panel-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 15px;
+        }
+
+        .setting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #1a1a20;
+        }
+
+        .setting-row:last-child { border-bottom: none; }
+
+        .setting-label {
+            font-size: 13px;
+            color: #ccc;
+        }
+
+        .checkbox {
+            width: 16px;
+            height: 16px;
+            border: 1px solid #333;
+            border-radius: 3px;
+            background: #0d0d0f;
+            cursor: pointer;
+            position: relative;
+            transition: all 0.15s;
+        }
+
+        .checkbox.checked {
+            background: #4ade80;
+            border-color: #4ade80;
+        }
+
+        .checkbox.checked::after {
+            content: '';
+            position: absolute;
+            left: 5px;
+            top: 2px;
+            width: 4px;
+            height: 8px;
+            border: solid #0d0d0f;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 10px;
+            background: #1a1a20;
+            border: 1px solid #2a2a35;
+            border-radius: 4px;
+            color: #ccc;
+            font-family: 'Inter', sans-serif;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            margin-top: 8px;
+        }
+
+        .btn:hover { background: #22222a; color: #fff; }
+        .btn.primary { background: #4ade80; border-color: #4ade80; color: #0d0d0f; }
+        .btn.primary:hover { background: #22c55e; }
+        .btn.danger { background: transparent; border-color: #ef4444; color: #ef4444; }
+        .btn.danger:hover { background: #ef4444; color: #fff; }
+
+        .input {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0d0d0f;
+            border: 1px solid #2a2a35;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .input:focus { border-color: #4ade80; }
+
+        .input-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .input-group .input { flex: 1; }
+
+        .key-list {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            margin-bottom: 4px;
+        }
+
+        .key-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background: #0d0d0f;
+            border: 1px solid #1e1e24;
+            border-radius: 4px;
+            margin-bottom: 6px;
+        }
+
+        .key-item-info {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .key-name {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            color: #e0e0e0;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .key-name span.key-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .key-meta {
+            font-size: 10px;
+            color: #666;
+            margin-top: 3px;
+            font-family: monospace;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .key-actions {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .key-actions button {
+            padding: 4px 8px;
+            background: #1a1a20;
+            border: 1px solid #2a2a35;
+            border-radius: 3px;
+            color: #888;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .key-actions button:hover { background: #22222a; color: #fff; }
+        .key-actions button.delete:hover { background: #ef4444; color: #fff; border-color: #ef4444; }
+
+        .status-badge {
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+
+        .status-badge.link { background: #064e3b; color: #4ade80; }
+        .status-badge.unlink { background: #450a0a; color: #ef4444; }
+        .status-badge.active { background: #064e3b; color: #4ade80; }
+
+        .session-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            display: inline-block;
+            margin-right: 6px;
+            flex-shrink: 0;
+        }
+
+        .session-indicator.active { background: #4ade80; }
+        .session-indicator.inactive { background: #ef4444; }
+
+        .login-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #0d0d0f;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        .login-box {
+            background: #111114;
+            border: 1px solid #1e1e24;
+            border-radius: 8px;
+            padding: 40px;
+            width: 320px;
+        }
+
+        .login-box h2 {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .login-box .input { margin-bottom: 12px; }
+
+        .login-error {
+            color: #ef4444;
+            font-size: 12px;
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        .code-editor {
+            width: 100%;
+            height: 500px;
+            background: #0d0d0f;
+            border: 1px solid #2a2a35;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 11px;
+            padding: 12px;
+            resize: none;
+            outline: none;
+            line-height: 1.6;
+        }
+
+        .code-editor:focus { border-color: #4ade80; }
+
+        .preset-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .preset-row .btn { flex: 1; }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 0;
+        }
+
+        .slider {
+            flex: 1;
+            height: 4px;
+            background: #1e1e24;
+            border-radius: 2px;
+            position: relative;
+        }
+
+        .slider-fill {
+            height: 100%;
+            background: #4ade80;
+            border-radius: 2px;
+        }
+
+        .slider-value {
+            font-size: 12px;
+            color: #888;
+            min-width: 40px;
+            text-align: right;
+        }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0d0d0f; }
+        ::-webkit-scrollbar-thumb { background: #2a2a35; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #333; }
+
+        .hidden { display: none !important; }
+
+        .code-example {
+            background: #0d0d0f;
+            border: 1px solid #1e1e24;
+            border-radius: 4px;
+            padding: 12px;
+            margin-top: 10px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            color: #888;
+            position: relative;
+            white-space: pre-line;
+        }
+
+        .script-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 8px;
+            background: #ef4444;
+        }
+
+        .script-indicator.pending { background: #eab308; }
+        .script-indicator.loaded { background: #4ade80; }
+        .script-indicator.empty { background: #ef4444; }
+
+        .password-wrap {
+            position: relative;
+            margin-bottom: 10px;
+        }
+
+        .password-wrap .input {
+            margin-bottom: 0;
+            padding-right: 42px;
+        }
+
+        .eye-toggle {
+            position: absolute;
+            top: 50%;
+            right: 6px;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #555;
+            cursor: pointer;
+            padding: 6px;
+            display: flex;
+            align-items: center;
+        }
+
+        .eye-toggle:hover { color: #4ade80; }
+        .eye-toggle svg { width: 18px; height: 18px; }
+
+        .remember-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 14px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .remember-row input {
+            width: 15px;
+            height: 15px;
+            accent-color: #4ade80;
+            cursor: pointer;
+        }
+
+        .log-window {
+            flex: 1;
+            min-height: 180px;
+            max-height: 300px;
+            overflow-y: auto;
+            background: #0d0d0f;
+            border: 1px solid #1e1e24;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 11px;
+            line-height: 1.7;
+        }
+
+        .log-line { display: flex; gap: 8px; }
+        .log-time { color: #555; flex-shrink: 0; }
+        .log-msg { word-break: break-word; }
+        .log-line.success .log-msg { color: #4ade80; }
+        .log-line.error .log-msg { color: #ef4444; }
+        .log-line.info .log-msg { color: #60a5fa; }
+        .log-line.kick { background: #2a0f0f; }
+
+        .log-empty { color: #444; text-align: center; padding: 20px; }
+
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 8px;
+            background: #ef4444;
+        }
+
+        .live-dot.on { background: #4ade80; }
+
+        .log-timer {
+            font-size: 10px;
+            color: #666;
+            vertical-align: middle;
+            margin-left: 8px;
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .tab-panel { margin-right: 0; }
+
+        .code-example .keyword { color: #c084fc; }        .code-example .string { color: #4ade80; }
+        .code-example .comment { color: #555; }
+        .code-example .func { color: #60a5fa; }
+
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            padding: 4px 10px;
+            background: #1a1a20;
+            border: 1px solid #2a2a35;
+            border-radius: 3px;
+            color: #888;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .copy-btn:hover { background: #22222a; color: #fff; }
+    </style>
+</head>
+<body>
+    <div id="loginScreen" class="login-overlay">
+        <div class="login-box">
+            <h2>AUTHENTICATION</h2>
+            <div class="password-wrap">
+                <input type="password" class="input" id="loginPassword" placeholder="Enter password..." autofocus>
+                <button type="button" class="eye-toggle" id="eyeToggle" onclick="togglePassword()">
+                    <svg id="eyeIcon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.477 12.955A10 10 0 013.64 8.44m16.72 4.515a10 10 0 01-1.837 4.515M6.75 8.44A10 10 0 0012 6.5c1.2 0 2.34.22 3.39.63m-12.02 8.822A10 10 0 0012 17.5c1.2 0 2.34-.22 3.39-.63"/></svg>
+                </button>
+            </div>
+            <label class="remember-row">
+                <input type="checkbox" id="rememberCheck" checked>
+                <span>Remember password on this device</span>
+            </label>
+            <button class="btn primary" onclick="doLogin()">Login</button>
+            <p class="login-error" id="loginError"></p>
+        </div>
+    </div>
+
+    <div id="app" class="app hidden">
+        <div class="sidebar">
+            <div class="sidebar-icon active" data-tab="keys" title="Keys">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+            </div>
+            <div class="sidebar-icon" data-tab="script" title="Script">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+            </div>
+            <div class="sidebar-icon" data-tab="logs" title="Logs">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="panel tab-panel" id="tab-keys">
+                <div class="panel-title">Key Management</div>
+                <div class="setting-row">
+                    <span class="setting-label">New Key</span>
+                    <div class="input-group">
+                        <input type="text" class="input" id="newKeyInput" placeholder="Auto-generate">
+                        <button class="btn primary" onclick="createKey()">Create</button>
+                    </div>
+                </div>
+                <div class="key-list" id="keyList"></div>
+                <div class="panel-title" style="margin-top:20px;">Actions</div>
+                <div class="preset-row">
+                    <button class="btn" onclick="refreshKeys()">Refresh</button>
+                    <button class="btn danger" onclick="doLogout()">Logout</button>
+                </div>
+            </div>
+
+            <div class="panel tab-panel hidden" id="tab-script">
+                <div class="panel-title">Client Code <span class="script-indicator" id="clientIndicator"></span></div>
+                <textarea class="code-editor" id="clientEditor" placeholder="-- Client side code (gate / pull / decrypt)"></textarea>
+                <button class="btn primary" onclick="saveClient()">Save Client</button>
+                <button class="btn" onclick="loadClient()">Load</button>
+
+                <div class="panel-title" style="margin-top:20px;">Script Code <span class="script-indicator" id="scriptIndicator"></span></div>
+                <textarea class="code-editor" id="scriptEditor" placeholder="-- Script code here"></textarea>
+                <button class="btn primary" onclick="saveScript()">Save Script</button>
+                <button class="btn" onclick="loadScript()">Load</button>
+
+                <div class="panel-title" style="margin-top:20px;">Usage Example</div>
+                <div class="code-example">
+                    <button class="copy-btn" onclick="copyCode()">Copy</button>
+                    <span class="keyword">getgenv</span>().Script_Key = <span class="string">"your key here !!!!!!!!!!"</span>\n
+                    <span class="keyword">loadstring</span>(<span class="keyword">game</span>:<span class="func">HttpGet</span>(<span class="string">"https://loader-dusky-alpha.vercel.app/api/client?Key="</span> .. getgenv().Script_Key))()
+                </div>
+            </div>
+
+            <div class="panel tab-panel hidden" id="tab-logs">
+                <div class="panel-title">Script Load Logs <span class="live-dot" id="logsLive"></span></div>
+                <div class="log-window" id="scriptLogs"></div>
+
+                <div class="panel-title" style="margin-top:20px;">Heartbeat Checks <span class="log-timer" id="hbTimer"></span></div>
+                <div class="log-window" id="heartbeatLogs"></div>
+
+                <div class="preset-row" style="margin-top:10px;">
+                    <button class="btn" onclick="loadLogs()">Refresh</button>
+                    <button class="btn danger" onclick="clearLogs()">Clear</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let password = '';
+
+        document.querySelectorAll('.sidebar-icon[data-tab]').forEach(icon => {
+            icon.addEventListener('click', () => switchTab(icon.dataset.tab));
+        });
+
+        function switchTab(tab) {
+            document.querySelectorAll('.sidebar-icon[data-tab]').forEach(i => i.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+            document.querySelector(`.sidebar-icon[data-tab="${tab}"]`).classList.add('active');
+            document.getElementById('tab-' + tab).classList.remove('hidden');
+            if (tab === 'logs') loadLogs();
+        }
+
+        const LOG_POLL_MS = 40000;
+        let logTimer = null;
+
+        function startLogPolling() {
+            if (logTimer) return;
+            const tick = () => {
+                loadLogs(true);
+                setHbCountdown(LOG_POLL_MS);
+            };
+            tick();
+            logTimer = setInterval(tick, LOG_POLL_MS);
+        }
+
+        function setHbCountdown(ms) {
+            const el = document.getElementById('hbTimer');
+            let left = Math.round(ms / 1000);
+            const render = () => { if (el) el.textContent = 'refresh in ' + left + 's'; };
+            render();
+            clearInterval(setHbCountdown._i);
+            setHbCountdown._i = setInterval(() => {
+                left--;
+                if (left <= 0) { clearInterval(setHbCountdown._i); return; }
+                render();
+            }, 1000);
+        }
+
+        function formatLog(entry) {
+            const d = new Date(entry.t || Date.now());
+            const time = d.toTimeString().slice(0, 8);
+            const parts = [entry.event || 'event'];
+            if (entry.key) parts.push('key=' + entry.key);
+            if (entry.hwid) parts.push('hwid=' + String(entry.hwid).slice(0, 12));
+            if (entry.fp) parts.push('fp=' + String(entry.fp).slice(0, 12));
+            if (entry.reason) parts.push(entry.reason);
+            if (entry.kick) parts.push('[KICK]');
+            if (entry.ip) parts.push(entry.ip);
+            return { time, text: parts.join('  ') };
+        }
+
+        function renderLogs(elId, entries) {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            if (!entries || entries.length === 0) {
+                el.innerHTML = '<div class="log-empty">No entries yet</div>';
+                return;
+            }
+            el.innerHTML = entries.map(e => {
+                const f = formatLog(e);
+                const cls = e.kick ? 'kick' : (e.level || 'info');
+                return `<div class="log-line ${cls}"><span class="log-time">${f.time}</span><span class="log-msg">${f.text}</span></div>`;
+            }).join('');
+        }
+
+        async function loadLogs(silent) {
+            try {
+                const resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, action: 'getLogs' })
+                });
+                const data = await resp.json();
+                if (!data.success) return;
+                renderLogs('scriptLogs', data.script);
+                renderLogs('heartbeatLogs', data.heartbeat);
+                const dot = document.getElementById('logsLive');
+                if (dot) dot.classList.add('on');
+            } catch (e) {
+                if (!silent) alert('Error loading logs: ' + e.message);
+            }
+        }
+
+        async function clearLogs() {
+            try {
+                await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, action: 'clearLogs' })
+                });
+                renderLogs('scriptLogs', []);
+                renderLogs('heartbeatLogs', []);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        const STORAGE_KEY = 'outlaw_admin_password';
+        const EYE_OPEN = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.477 12.955A10 10 0 013.64 8.44m16.72 4.515a10 10 0 01-1.837 4.515M6.75 8.44A10 10 0 0012 6.5c1.2 0 2.34.22 3.39.63m-12.02 8.822A10 10 0 0012 17.5c1.2 0 2.34-.22 3.39-.63"/>';
+        const EYE_CLOSED = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3l18 18"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.586 10.586a3 3 0 104.242 4.242m-1.39-3.42a10 10 0 011.39 3.42m3.39-4.515a10 10 0 00-1.837-4.515M6.75 8.44A10 10 0 0012 6.5c1.2 0 2.34.22 3.39.63m-12.02 8.822A10 10 0 0012 17.5c1.2 0 2.34-.22 3.39-.63"/>';
+
+        function togglePassword() {
+            const input = document.getElementById('loginPassword');
+            const shown = input.type === 'text';
+            input.type = shown ? 'password' : 'text';
+            document.getElementById('eyeIcon').innerHTML = shown ? EYE_OPEN : EYE_CLOSED;
+        }
+
+        function saveStoredPassword(pwd) {
+            if (document.getElementById('rememberCheck').checked) {
+                localStorage.setItem(STORAGE_KEY, pwd);
+            } else {
+                localStorage.removeItem(STORAGE_KEY);
+            }
+        }
+
+        (function restorePassword() {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+                document.getElementById('loginPassword').value = stored;
+                doLogin();
+            }
+        })();
+
+        document.getElementById('loginPassword').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') doLogin();
+        });
+
+        async function doLogin() {
+            const pwd = document.getElementById('loginPassword').value;
+            if (!pwd) return;
+            password = pwd;
+            const ok = await fetchKeys(true);
+            if (ok) {
+                saveStoredPassword(pwd);
+                document.getElementById('loginScreen').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+                loadClient();
+                loadScript();
+                startLogPolling();
+            } else {
+                document.getElementById('loginError').textContent = 'Invalid password';
+                password = '';
+            }
+        }
+
+        async function doLogout() {
+            document.getElementById('app').classList.add('hidden');
+            document.getElementById('loginScreen').classList.remove('hidden');
+            const remember = document.getElementById('rememberCheck').checked;
+            if (remember) {
+                localStorage.setItem(STORAGE_KEY, password);
+            } else {
+                localStorage.removeItem(STORAGE_KEY);
+                document.getElementById('loginPassword').value = '';
+            }
+            password = '';
+            if (logTimer) { clearInterval(logTimer); logTimer = null; }
+        }
+
+        async function fetchKeys(silent) {
+            try {
+                const resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, action: 'listKeys' })
+                });
+                const data = await resp.json();
+                if (!data.success) {
+                    if (!silent) alert(data.error);
+                    return false;
+                }
+                renderKeys(data.keys);
+                return true;
+            } catch (e) {
+                if (!silent) alert('Error: ' + e.message);
+                return false;
+            }
+        }
+
+        function renderKeys(keys) {
+            const list = document.getElementById('keyList');
+            list.innerHTML = '';
+            if (!keys || keys.length === 0) {
+                list.innerHTML = '<p style="color:#555;font-size:12px;text-align:center;padding:20px;">No keys found</p>';
+                return;
+            }
+            keys.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'key-item';
+                const statusClass = item.status === 'link' ? 'link' : 'unlink';
+                const sessionClass = item.sessionActive ? 'active' : 'inactive';
+                div.innerHTML = `
+                    <div class="key-item-info">
+                        <div class="key-name"><span class="session-indicator ${sessionClass}"></span><span class="key-text">${item.key}</span></div>
+                        <div class="key-meta">${item.hwid ? 'HWID: ' + item.hwid.substring(0,12) + '...' : 'No HWID'} ${item.fingerprint ? '• FP: ' + item.fingerprint.substring(0,8) + '...' : ''} ${item.oneTime ? '• One-time' : ''}</div>
+                    </div>
+                    <div class="key-actions">
+                        <button onclick="toggleKey('${item.key}', '${item.status}')">${item.status === 'link' ? 'Unlink' : 'Link'}</button>
+                        <button onclick="resetSession('${item.key}')">Reset</button>
+                        <button class="delete" onclick="deleteKey('${item.key}')">Del</button>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        async function createKey() {
+            const input = document.getElementById('newKeyInput');
+            const key = input.value.trim() || Math.random().toString(36).substring(2, 18);
+            await sendAction({ action: 'setKey', key, status: 'link' });
+            input.value = '';
+        }
+
+        async function deleteKey(key) {
+            if (!confirm(`Delete key "${key}"?`)) return;
+            await sendAction({ action: 'deleteKey', key });
+        }
+
+        async function toggleKey(key, current) {
+            await sendAction({ action: 'setKey', key, status: current === 'link' ? 'unlink' : 'link' });
+        }
+
+        async function resetSession(key) {
+            await sendAction({ action: 'resetSession', key });
+        }
+
+        function setScriptIndicator(state) {
+            const el = document.getElementById('scriptIndicator');
+            el.className = 'script-indicator ' + state;
+        }
+
+        function setClientIndicator(state) {
+            const el = document.getElementById('clientIndicator');
+            el.className = 'script-indicator ' + state;
+        }
+
+        async function saveClient() {
+            setClientIndicator('pending');
+            const client = document.getElementById('clientEditor').value;
+            const resp = await fetch('/api/admin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password, action: 'setClient', client })
+            });
+            const data = await resp.json();
+            setClientIndicator(data.success ? 'loaded' : 'empty');
+        }
+
+        async function loadClient() {
+            setClientIndicator('pending');
+            try {
+                const resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, action: 'getClient' })
+                });
+                const data = await resp.json();
+                const client = data.client || '';
+                document.getElementById('clientEditor').value = client;
+                setClientIndicator(client.trim() ? 'loaded' : 'empty');
+            } catch {
+                setClientIndicator('empty');
+            }
+        }
+
+        async function saveScript() {
+            setScriptIndicator('pending');
+            const code = document.getElementById('scriptEditor').value;
+            const resp = await fetch('/api/admin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password, action: 'setCode', code })
+            });
+            const data = await resp.json();
+            setScriptIndicator(data.success ? 'loaded' : 'empty');
+        }
+
+        async function loadScript() {
+            setScriptIndicator('pending');
+            try {
+                const resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, action: 'getCode' })
+                });
+                const data = await resp.json();
+                const code = data.code || '';
+                document.getElementById('scriptEditor').value = code;
+                setScriptIndicator(code.trim() ? 'loaded' : 'empty');
+            } catch {
+                setScriptIndicator('empty');
+            }
+        }
+
+        async function sendAction(body) {
+            try {
+                await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, ...body })
+                });
+                if (body.action !== 'listKeys') fetchKeys(true);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        function refreshKeys() { fetchKeys(false); }
+
+        function copyCode() {
+            const code = `getgenv().Script_Key = "your key here !!!!!!!!!!"\nloadstring(game:HttpGet("https://loader-dusky-alpha.vercel.app/api/client?Key=" .. getgenv().Script_Key))()`;
+            navigator.clipboard.writeText(code).then(() => {
+                const btn = document.querySelector('.copy-btn');
+                btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = 'Copy', 1500);
+            });
+        }
+    </script>
+</body>
+</html>
